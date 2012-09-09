@@ -17,6 +17,10 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+/*
+ * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Use is subject to license terms.
+ */
 
 #include <shared.h>
 #include <term.h>
@@ -231,7 +235,7 @@ grub_printf (const char *format,...)
   va_end(ap);
 }
 
-#ifndef STAGE1_5
+#if !defined(STAGE1_5) || defined(FSYS_ZFS)
 int
 grub_sprintf (char *buffer, const char *format, ...)
 {
@@ -284,8 +288,10 @@ grub_sprintf (char *buffer, const char *format, ...)
   *bp = 0;
   return bp - buffer;
 }
+#endif /* !defined(STAGE1_5) || defined(FSYS_ZFS) */
 
 
+#ifndef STAGE1_5
 void
 init_page (void)
 {
@@ -1036,7 +1042,10 @@ grub_strncat (char *s1, const char *s2, int n)
    a static library supporting minimal standard C functions and link
    each image with the library. Complicated things should be left to
    computer, definitely. -okuji  */
-#if !defined(STAGE1_5) || defined(FSYS_VSTAFS)
+
+/* Make some grub_str* routines available to ZFS plug-in as well */
+
+#if !defined(STAGE1_5) || defined(FSYS_VSTAFS) || defined(FSYS_ZFS)
 int
 grub_strcmp (const char *s1, const char *s2)
 {
@@ -1052,7 +1061,20 @@ grub_strcmp (const char *s1, const char *s2)
 
   return 0;
 }
-#endif /* ! STAGE1_5 || FSYS_VSTAFS */
+
+int
+grub_strncmp(const char *s1, const char *s2, int n)
+{
+        if (s1 == s2)
+                return (0);
+        n++;
+        while (--n != 0 && *s1 == *s2++)
+                if (*s1++ == '\0')
+                        return (0);
+        return ((n == 0) ? 0 : *(unsigned char *)s1 - *(unsigned char *)--s2);
+}
+
+#endif /* ! STAGE1_5 || FSYS_VSTAFS || defined(FSYS_ZFS) */
 
 #ifndef STAGE1_5
 /* Wait for a keypress and return its code.  */
@@ -1218,7 +1240,9 @@ nul_terminate (char *str)
   *str = 0;
   return ch;
 }
+#endif
 
+#if !defined(STAGE1_5) || defined(FSYS_ZFS)
 char *
 grub_strstr (const char *s1, const char *s2)
 {
@@ -1250,6 +1274,16 @@ grub_strlen (const char *str)
     len++;
 
   return len;
+}
+#endif /* !defined(STAGE1_5) || defined(FSYS_ZFS) */
+
+#ifndef STAGE1_5
+char *
+grub_strchr (char *str, char c)
+{
+  for (; *str && (*str != c); str++);
+
+  return (*str ? str : NULL);
 }
 #endif /* ! STAGE1_5 */
 

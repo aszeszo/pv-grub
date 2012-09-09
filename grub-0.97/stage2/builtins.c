@@ -111,6 +111,12 @@ init_config (void)
   fallback_entryno = -1;
   fallback_entries[0] = -1;
   grub_timeout = -1;
+  current_rootpool[0] = '\0';
+  current_bootfs[0] = '\0';
+  current_bootpath[0] = '\0';
+  current_bootfs_obj = 0;
+  current_devid[0] = '\0';
+  is_zfs_mount = 0;
 }
 
 /* Check a password for correctness.  Returns 0 if password was
@@ -1486,16 +1492,56 @@ static struct builtin builtin_fallback =
 };
 
 
-/* find */
-/* Search for the filename ARG in all of partitions.  */
-static int
-find_func (char *arg, int flags)
+
+void
+set_root (char *root, unsigned long drive, unsigned long part)
 {
-  char *filename = arg;
+  int bsd_part = (part >> 8) & 0xFF;
+  int pc_slice = part >> 16;
+
+  if (bsd_part == 0xFF) {
+    grub_sprintf (root, "(hd%d,%d)\n", drive - 0x80, pc_slice);
+  } else {
+    grub_sprintf (root, "(hd%d,%d,%c)\n",
+		 drive - 0x80, pc_slice, bsd_part + 'a');
+  }
+}
+
+static int
+find_common (char *arg, char *root, int for_root, int flags)
+{
+  char *filename = NULL;
+  static char argpart[32];
+  static char device[32];
+  char *tmp_argpart = NULL;
   unsigned long drive;
   unsigned long tmp_drive = saved_drive;
   unsigned long tmp_partition = saved_partition;
   int got_file = 0;
+  static char bootsign[BOOTSIGN_LEN];
+
+  /*
+   * If argument has partition information (findroot command only), then
+   * it can't be a floppy
+   */
+  if (for_root && arg[0] == '(') {
+	tmp_argpart = grub_strchr(arg + 1, ',');
+        if (tmp_argpart == NULL)
+		goto out;
+	grub_strcpy(argpart, tmp_argpart);
+	*tmp_argpart = '\0';
+	arg++;
+        grub_sprintf(bootsign, "%s/%s", BOOTSIGN_DIR, arg);
+	filename = bootsign;
+	goto harddisk;
+  } else if (for_root && !grub_strchr(arg, '/')) {
+	/* Boot signature without partition/slice information */
+        grub_sprintf(bootsign, "%s/%s", BOOTSIGN_DIR, arg);
+	filename = bootsign;
+  } else {
+	/* plain vanilla find cmd */
+	filename = arg;
+  }
   
   /* Floppies.  */
   for (drive = 0; drive < 8; drive++)
@@ -1510,14 +1556,19 @@ find_func (char *arg, int flags)
 	  if (grub_open (filename))
 	    {
 	      grub_close ();
-	      grub_printf (" (fd%d)\n", drive);
 	      got_file = 1;
+	      if (for_root) {
+		 grub_sprintf(root, "(fd%d)", drive);
+		 goto out;
+	      } else
+	         grub_printf (" (fd%d)\n", drive);
 	    }
 	}
 
       errnum = ERR_NONE;
     }
 
+harddisk:
   /* Hard disks.  */
   for (drive = 0x80; drive < 0x88; drive++)
     {
@@ -1526,6 +1577,30 @@ find_func (char *arg, int flags)
       int type, entry;
       char buf[SECTOR_SIZE];
 
+      if (for_root && tmp_argpart) {
+	grub_sprintf(device, "(hd%d%s", drive - 0x80, argpart);
+	set_device(device);
+        errnum = ERR_NONE;
+	part = current_partition;
+	if (open_device ()) {
+	   saved_drive = current_drive;
+	   saved_partition = current_partition;
+           errnum = ERR_NONE;
+	   if (grub_open (filename)) {
+	      grub_close ();
+	      got_file = 1;
+	      if (is_zfs_mount == 0) {
+	        set_root(root, current_drive, current_partition);
+	        goto out;
+	      } else {
+		best_drive = current_drive;
+		best_part = current_partition;
+	      }
+           }
+	}
+        errnum = ERR_NONE;
+	continue;
+      }
       current_drive = drive;
       while (next_partition (drive, 0xFFFFFF, &part, &type,
 			     &start, &len, &offset, &entry,
@@ -1542,19 +1617,22 @@ find_func (char *arg, int flags)
 		  saved_partition = current_partition;
 		  if (grub_open (filename))
 		    {
-		      int bsd_part = (part >> 8) & 0xFF;
-		      int pc_slice = part >> 16;
-		      
-		      grub_close ();
-		      
-		      if (bsd_part == 0xFF)
-			grub_printf (" (hd%d,%d)\n",
-				     drive - 0x80, pc_slice);
-		      else
-			grub_printf (" (hd%d,%d,%c)\n",
-				     drive - 0x80, pc_slice, bsd_part + 'a');
+		      char tmproot[32];
 
+		      grub_close ();
 		      got_file = 1;
+		      set_root(tmproot, drive, part);
+		      if (for_root) {
+		 	grub_memcpy(root, tmproot, sizeof(tmproot));
+			if (is_zfs_mount == 0) {
+			      goto out;
+			} else {
+			      best_drive = current_drive;
+			      best_part = current_partition;
+			}
+		      } else {
+			grub_printf("%s", tmproot);
+		      }
 		    }
 		}
 	    }
@@ -1568,8 +1646,16 @@ find_func (char *arg, int flags)
       errnum = ERR_NONE;
     }
 
-  saved_drive = tmp_drive;
-  saved_partition = tmp_partition;
+out:
+  if (is_zfs_mount && for_root) {
+        set_root(root, best_drive, best_part);
+	buf_drive = -1;
+  } else {
+	saved_drive = tmp_drive;
+	saved_partition = tmp_partition;
+  }
+  if (tmp_argpart)
+	*tmp_argpart = ',';
 
   if (got_file)
     {
@@ -1579,6 +1665,14 @@ find_func (char *arg, int flags)
 
   errnum = ERR_FILE_NOT_FOUND;
   return 1;
+}
+
+/* find */
+/* Search for the filename ARG in all of partitions.  */
+static int
+find_func (char *arg, int flags)
+{
+	return (find_common(arg, NULL, 0, flags));
 }
 
 static struct builtin builtin_find =
@@ -2655,6 +2749,117 @@ static struct builtin builtin_print =
 
 
 
+/*
+ * To boot from a ZFS root filesystem, the kernel$ or module$ commands
+ * must include "-B $ZFS-BOOTFS" to expand to the zfs-bootfs, bootpath,
+ * and diskdevid boot property values for passing to the kernel:
+ *
+ * e.g.
+ * kernel$ /platform/i86pc/kernel/$ISADIR/unix -B $ZFS-BOOTFS,console=ttya
+ *
+ * $ZFS-BOOTFS is expanded to
+ *
+ *    zfs-bootfs=<rootpool-name/zfs-rootfilesystem-object-num>,
+ *    bootpath=<device phys path>,
+ *    diskdevid=<device id>
+ *
+ * if both bootpath and diskdevid can be found.
+ * e.g
+ *    zfs-bootfs=rpool/85,
+ *    bootpath="/pci@0,0/pci1022,7450@a/pci17c2,10@4/sd@0,0:a",
+ *    diskdevid="id1,sd@SSEAGATE_ST336607LC______3JA0LNHE0000741326W6/a"
+ */
+static int
+expand_dollar_bootfs(char *in, char *out)
+{
+	char *token, *tmpout = out;
+	int outlen, blen;
+	int postcomma = 0;
+
+	/* no op if this is not zfs */
+	if (is_zfs_mount == 0)
+		return (0);
+
+	if (current_bootpath[0] == '\0' && current_devid[0] == '\0') {
+		errnum = ERR_NO_BOOTPATH;
+		return (1);
+	}
+
+	outlen = strlen(in);
+	blen = current_bootfs_obj == 0 ? strlen(current_rootpool) :
+	    strlen(current_rootpool) + 11;
+
+	out[0] = '\0';
+	while (token = strstr(in, "$ZFS-BOOTFS")) {
+
+		if ((outlen += blen) >= MAX_CMDLINE) {
+			errnum = ERR_WONT_FIT;
+			return (1);
+		}
+
+		token[0] = '\0';	
+		grub_sprintf(tmpout, "%s", in);
+		token[0] = '$';
+		in = token + 11; /* skip over $ZFS-BOOTFS */
+		tmpout = out + strlen(out);
+
+		/* Note: %u only fits 32 bit integer; */ 
+		if (current_bootfs_obj > 0)
+			grub_sprintf(tmpout, "zfs-bootfs=%s/%u",
+			    current_rootpool, current_bootfs_obj);
+		else
+			grub_sprintf(tmpout, "zfs-bootfs=%s",
+			    current_rootpool);
+		tmpout = out + strlen(out); 
+	}
+
+	/*
+	 * Check to see if 'zfs-bootfs' was explicitly specified on the command
+	 * line so that we can insert the 'bootpath' property.
+	 */
+	if ((tmpout == out) && (token = strstr(in, "zfs-bootfs")) != NULL) {
+		token[0] = '\0';
+		grub_strcpy(tmpout, in);
+		token[0] = 'z';
+		in = token;
+
+		tmpout = out + strlen(out);
+		postcomma = 1;
+	}
+
+	/*
+	 * Set the 'bootpath' property if a ZFS dataset was specified, either
+	 * through '$ZFS-BOOTFS' or an explicit 'zfs-bootfs' setting.
+	 */
+	if (tmpout != out) {
+		if (current_bootpath[0] != '\0') {
+			if ((outlen += 12 + strlen(current_bootpath))
+			    >= MAX_CMDLINE) {
+				errnum = ERR_WONT_FIT;
+				return (1);
+			}
+			grub_sprintf(tmpout,
+			    postcomma ? "bootpath=\"%s\"," : ",bootpath=\"%s\"",
+			    current_bootpath);
+			tmpout = out + strlen(out);
+		}
+
+		if (current_devid[0] != '\0') {
+			if ((outlen += 13 + strlen(current_devid))
+			    >= MAX_CMDLINE) {
+				errnum = ERR_WONT_FIT;
+				return (1);
+			}
+			grub_sprintf(tmpout,
+			    postcomma ? "diskdevid=\"%s\"," : ",diskdevid=\"%s\"",
+			    current_devid);
+		}
+	}
+
+	strncat(out, in, MAX_CMDLINE);
+	return (0);
+}
+
 /* kernel */
 static int
 kernel_func (char *arg, int flags)
@@ -2741,6 +2946,141 @@ static struct builtin builtin_kernel =
   " \"netbsd\", \"freebsd\", \"openbsd\", \"linux\", \"biglinux\" and"
   " \"multiboot\". The option --no-mem-option tells GRUB not to pass a"
   " Linux's mem option automatically."
+};
+
+int
+isamd64()
+{
+	static int ret = 0;
+
+#ifdef __x86_64__
+    ret = 1;
+#endif
+
+	return (ret);
+}
+
+static void
+expand_arch (char *arg, char *newarg)
+{
+  char *index;
+
+  newarg[0] = '\0';
+
+  while ((index = strstr(arg, "$ISADIR")) != NULL) {
+
+    index[0] = '\0';
+    strncat(newarg, arg, MAX_CMDLINE);
+    index[0] = '$';
+
+    if (isamd64())
+      strncat(newarg, "amd64", MAX_CMDLINE);
+
+    arg = index + 7;
+  }
+
+  strncat(newarg, arg, MAX_CMDLINE);
+  return;
+}
+
+static int
+substitute_platform_i86xpv (char *arg, char *newarg)
+{
+  char *index;
+
+  newarg[0] = '\0';
+
+  while ((index = strstr(arg, "i86pc")) != NULL) {
+
+    index[0] = '\0';
+    if (!strncat(newarg, arg, MAX_CMDLINE)
+        || !strncat(newarg, "i86xpv", MAX_CMDLINE)) {
+      errnum = ERR_WONT_FIT;
+      return (1);
+    }
+    index[0] = 'i';
+
+    arg = index + 5;  /* length of "i86pc" */
+  }
+
+  if (!strncat(newarg, arg, MAX_CMDLINE)) {
+    errnum = ERR_WONT_FIT;
+    return (1);
+  }
+
+  return (0);
+}
+
+/* kernel$ */
+static int
+kernel_dollar_func (char *arg, int flags)
+{
+  char newarg[MAX_CMDLINE];	/* everything boils down to MAX_CMDLINE */
+#ifdef __MINIOS__
+  char tmparg[MAX_CMDLINE];	
+#endif
+
+  grub_printf("loading '%s' ...\n", arg);
+  expand_arch(arg, newarg);
+
+#ifdef __MINIOS__
+  /* replace "i86pc" by "i86xpv" in the kernel filename,
+     to enable pv-grub to use an unmodified menu.lst */
+  if (substitute_platform_i86xpv(newarg,tmparg))
+      return (1);
+
+  /* on ZFS, grub_open the kernel to set the value of current_bootfs_obj */
+  grub_strcpy(newarg,tmparg);
+  nul_terminate(newarg);
+  if (is_zfs_mount) {
+      if (!grub_open(newarg))
+          return (1);
+      grub_close();
+  }
+
+  /* the kernel filename is duplicated as the first argument to the kernel */
+  if (!strncat(newarg, " ", MAX_CMDLINE)
+      || !strncat(newarg, tmparg, MAX_CMDLINE)) {
+      errnum = ERR_WONT_FIT;
+      return (1);
+  }
+
+  grub_strcpy(tmparg,newarg);
+  if (expand_dollar_bootfs(tmparg, newarg)) {
+      grub_printf("cannot expand $ZFS-BOOTFS for dataset %s\n",
+          current_bootfs);
+      return (1);
+  }
+
+  if (kernel_func(newarg, flags))
+      return (1);
+
+  grub_printf("'%s' is loaded\n", newarg);
+#else  /* ! __MINIOS__ */
+  if (kernel_func(newarg, flags))
+	return (1);
+
+  mb_cmdline = (char *)MB_CMDLINE_BUF;
+  if (expand_dollar_bootfs(newarg, mb_cmdline)) {
+	grub_printf("cannot expand $ZFS-BOOTFS for dataset %s\n",
+	    current_bootfs);
+	return (1);
+  }
+
+  grub_printf("'%s' is loaded\n", mb_cmdline);
+  mb_cmdline += grub_strlen(mb_cmdline) + 1;
+#endif /* ! __MINIOS__ */
+
+  return (0);
+}
+
+static struct builtin builtin_kernel_dollar =
+{
+  "kernel$",
+  kernel_dollar_func,
+  BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
+  "kernel$ [--no-mem-option] [--type=TYPE] FILE [ARG ...]",
+  " Just like kernel, but with $ISADIR expansion."
 };
 
 
@@ -2957,6 +3297,50 @@ static struct builtin builtin_module =
   " command must know what the kernel in question expects). The"
   " rest of the line is passed as the \"module command line\", like"
   " the `kernel' command."
+};
+
+/* module$ */
+static int
+module_dollar_func (char *arg, int flags)
+{
+  char newarg[MAX_CMDLINE];	/* everything boils down to MAX_CMDLINE */
+  char *cmdline_sav;
+
+  grub_printf("loading '%s' ...\n", arg);
+  expand_arch(arg, newarg);
+
+/* Xen PV Solaris kernels ("i86xpv") are not Multiboot-compliant, and expect
+   to receive the boot archive as a Linux-style initial ramdisk. */
+#ifdef __MINIOS__
+  if (initrd_func(newarg, flags))
+	return (1);
+
+  grub_printf("'%s' is loaded\n", newarg);
+#else /* ! __MINIOS__ */
+  cmdline_sav = (char *)mb_cmdline;
+  if (module_func(newarg, flags))
+	return (1);
+
+  if (expand_dollar_bootfs(newarg, cmdline_sav)) {
+	grub_printf("cannot expand $ZFS-BOOTFS for dataset %s\n",
+	    current_bootfs);
+	return (1);
+  }
+
+  grub_printf("'%s' is loaded\n", (char *)cmdline_sav);
+  mb_cmdline += grub_strlen(cmdline_sav) + 1;
+#endif /* ! __MINIOS__ */
+
+  return (0);
+}
+
+static struct builtin builtin_module_dollar =
+{
+  "module$",
+  module_dollar_func,
+  BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
+  "module FILE [ARG ...]",
+  " Just like module, but with $ISADIR expansion."
 };
 
 
@@ -3506,6 +3890,7 @@ real_root_func (char *arg, int attempt_mount)
 static int
 root_func (char *arg, int flags)
 {
+  is_zfs_mount = 0;
   return real_root_func (arg, 1);
 }
 
@@ -3525,6 +3910,101 @@ static struct builtin builtin_root =
   " how many BIOS drive numbers are on controllers before the current"
   " one. For example, if there is an IDE disk and a SCSI disk, and your"
   " FreeBSD root partition is on the SCSI disk, then use a `1' for HDBIAS."
+};
+
+
+/* findroot */
+int
+findroot_func (char *arg, int flags)
+{
+  int ret;
+  char root[32];
+
+  if (grub_strlen(arg) >= BOOTSIGN_ARGLEN) {
+  	errnum = ERR_BAD_ARGUMENT;
+	return 1;
+  }
+
+  if (arg[0] == '\0') {
+  	errnum = ERR_BAD_ARGUMENT;
+	return 1;
+  }
+
+  find_best_root = 1;
+  best_drive = 0;
+  best_part = 0;
+  ret = find_common(arg, root, 1, flags);
+  if (ret != 0)
+	return (ret);
+  find_best_root = 0;
+
+  return real_root_func (root, 1);
+}
+
+static struct builtin builtin_findroot =
+{
+  "findroot",
+  findroot_func,
+  BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
+  "findroot  <SIGNATURE | (SIGNATURE,partition[,slice])>",
+  "Searches across all partitions for the file name SIGNATURE."
+  " GRUB looks only in the directory /boot/grub/bootsign for the"
+  " filename and it stops as soon as it finds the first instance of"
+  " the file - so to be useful the name of the signature file must be"
+  " unique across all partitions. Once the signature file is found,"
+  " GRUB invokes the \"root\" command on that partition."
+  " An optional partition and slice may be specified to optimize the search."
+};
+
+
+/*
+ * COMMAND to override the default root filesystem for ZFS
+ *	bootfs pool/fs
+ */
+static int
+bootfs_func (char *arg, int flags)
+{
+	int hdbias = 0;
+	char *biasptr;
+	char *next;
+
+	if (! *arg) {
+	    if (current_bootfs[0] != '\0')
+		grub_printf ("The zfs boot filesystem is set to '%s'.\n",
+				current_bootfs);
+	    else if (current_rootpool[0] != 0 && current_bootfs_obj != 0)
+		grub_printf("The zfs boot filesystem is <default: %s/%u>.",
+				current_rootpool, current_bootfs_obj);
+	    else
+		grub_printf ("The zfs boot filesystem will be derived from "
+			"the default bootfs pool property.\n");
+
+	    return (1);
+	}
+
+	/* Verify the zfs filesystem name */
+	if (arg[0] == '/' || arg[0] == '\0') {
+		errnum = ERR_BAD_ARGUMENT;
+		return 0;
+	}
+	if (current_rootpool[0] != 0 && grub_strncmp(arg,
+	    current_rootpool, strlen(current_rootpool))) {
+		errnum = ERR_BAD_ARGUMENT;
+		return 0;
+	}
+
+	grub_memmove(current_bootfs, arg, MAXNAMELEN);
+
+	return (1);
+}
+
+static struct builtin builtin_bootfs =
+{
+  "bootfs",
+  bootfs_func,
+  BUILTIN_CMDLINE | BUILTIN_HELP_LIST,
+  "bootfs [ZFSBOOTFS]",
+  "Set the current zfs boot filesystem to ZFSBOOTFS (rootpool/rootfs)."
 };
 
 
@@ -3666,6 +4146,11 @@ savedefault_helper (char *arg, int flags)
   int saved_sectors[2];
   int saved_offsets[2];
   int saved_lengths[2];
+
+  /* not supported for zfs root */
+  if (is_zfs_mount == 1) {
+	return (0); /* no-op */
+  }
 
   /* Save sector information about at most two sectors.  */
   auto void disk_read_savesect_func (int sector, int offset, int length);
@@ -5265,6 +5750,7 @@ struct builtin *builtin_table[] =
 #endif
   &builtin_blocklist,
   &builtin_boot,
+  &builtin_bootfs,
 #ifdef SUPPORT_NETBOOT
   &builtin_bootp,
 #endif /* SUPPORT_NETBOOT */
@@ -5297,6 +5783,7 @@ struct builtin *builtin_table[] =
 #endif
   &builtin_fallback,
   &builtin_find,
+  &builtin_findroot,
 #ifdef SUPPORT_GRAPHICS
   &builtin_foreground,
 #endif
@@ -5318,6 +5805,7 @@ struct builtin *builtin_table[] =
   &builtin_ioprobe,
 #endif
   &builtin_kernel,
+  &builtin_kernel_dollar,
   &builtin_lock,
   &builtin_makeactive,
   &builtin_map,
@@ -5325,6 +5813,7 @@ struct builtin *builtin_table[] =
   &builtin_md5crypt,
 #endif /* USE_MD5_PASSWORDS */
   &builtin_module,
+  &builtin_module_dollar,
   &builtin_modulenounzip,
   &builtin_pager,
   &builtin_partnew,

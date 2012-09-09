@@ -48,11 +48,29 @@ extern char grub_scratch_mem[];
 # define RAW_SEG(x) (x)
 #endif
 
+/* ZFS will use the top 4 Meg of domain memory for scratch */
+#define ZFS_ADDR         RAW_ADDR((mbi.mem_lower << 10) - ZFS_SCRATCH_SIZE)
+#define ZFS_SCRATCH_SIZE 0x400000
+
+#ifndef MAXPATHLEN
+#define	MAXPATHLEN	1024
+#endif
+
+#define	MAXNAMELEN	256
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+
+/* Boot signature related defines for the findroot command */
+#define	BOOTSIGN_DIR	"/boot/grub/bootsign"
+#define	BOOTSIGN_ARGLEN	(MAXNAMELEN + 10)	/* (<sign>,0,d) */
+#define	BOOTSIGN_LEN	(sizeof (BOOTSIGN_DIR) + 1 + BOOTSIGN_ARGLEN)
+#define	BOOTSIGN_BACKUP	"/etc/bootsign"
+
 /*
  *  Integer sizes
  */
 
 #define MAXINT     0x7FFFFFFF
+#define	MAXUINT		0xFFFFFFFF
 
 /* Maximum command line size. Before you blindly increase this value,
    see the comment in char_io.c (get_cmdline).  */
@@ -217,6 +235,7 @@ extern char grub_scratch_mem[];
 #define STAGE2_ID_XFS_STAGE1_5		9
 #define STAGE2_ID_ISO9660_STAGE1_5	10
 #define STAGE2_ID_UFS2_STAGE1_5		11
+#define STAGE2_ID_ZFS_STAGE1_5		12
 
 #ifndef STAGE1_5
 # define STAGE2_ID	STAGE2_ID_STAGE2
@@ -243,6 +262,8 @@ extern char grub_scratch_mem[];
 #  define STAGE2_ID	STAGE2_ID_ISO9660_STAGE1_5
 # elif defined(FSYS_UFS2)
 #  define STAGE2_ID	STAGE2_ID_UFS2_STAGE1_5
+# elif defined(FSYS_ZFS)
+#  define STAGE2_ID	STAGE2_ID_ZFS_STAGE1_5
 # else
 #  error "unknown Stage 2"
 # endif
@@ -556,6 +577,9 @@ typedef enum
   ERR_DEV_NEED_INIT,
   ERR_NO_DISK_SPACE,
   ERR_NUMBER_OVERFLOW,
+  ERR_FILESYSTEM_NOT_FOUND,
+  ERR_NO_BOOTPATH,
+  ERR_NEWER_VERSION,
 
   MAX_ERR_NUM
 } grub_error_t;
@@ -642,6 +666,15 @@ extern int debug;
 
 extern unsigned long current_drive;
 extern unsigned long current_partition;
+extern char current_rootpool[MAXNAMELEN];
+extern char current_bootfs[MAXNAMELEN];
+extern unsigned long long current_bootfs_obj;
+extern char current_bootpath[MAXPATHLEN];
+extern char current_devid[MAXPATHLEN];
+extern int is_zfs_mount;
+extern unsigned long best_drive;
+extern unsigned long best_part;
+extern int find_best_root;
 
 extern int fsys_type;
 
@@ -899,6 +932,7 @@ int grub_memcmp (const char *s1, const char *s2, int n);
 int grub_strcmp (const char *s1, const char *s2);
 int grub_strlen (const char *str);
 char *grub_strcpy (char *dest, const char *src);
+char *grub_strchr (char *str, char c);
 
 #if !defined(GRUB_UTIL) && !defined(__MINIOS__)
 typedef unsigned long grub_jmp_buf[6];

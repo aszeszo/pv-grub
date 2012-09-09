@@ -88,6 +88,10 @@ char *err_list[] =
   [ERR_UNRECOGNIZED] = "Unrecognized command",
   [ERR_WONT_FIT] = "Selected item cannot fit into memory",
   [ERR_WRITE] = "Disk write error",
+  [ERR_FILESYSTEM_NOT_FOUND] = "File System not found",
+    /* this zfs file system is not found in the pool of the device */
+  [ERR_NO_BOOTPATH] = "No valid boot path found in the zfs label. This may be caused by attempting to boot from an off-lined device.",
+  [ERR_NEWER_VERSION] = "Newer on-disk pool version",
 };
 
 

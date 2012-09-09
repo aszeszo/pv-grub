@@ -75,6 +75,9 @@ struct fsys_entry fsys_table[NUM_FSYS + 1] =
 # ifdef FSYS_UFS2
   {"ufs2", ufs2_mount, ufs2_read, ufs2_dir, 0, ufs2_embed},
 # endif
+# ifdef FSYS_ZFS
+  {"zfs", zfs_mount, zfs_read, zfs_open, 0, zfs_embed},
+# endif
 # ifdef FSYS_ISO9660
   {"iso9660", iso9660_mount, iso9660_read, iso9660_dir, 0, 0},
 # endif
@@ -120,6 +123,17 @@ unsigned long part_start;
 unsigned long part_length;
 
 int current_slice;
+
+/* ZFS root filesystem for booting */
+char current_rootpool[MAXNAMELEN];
+char current_bootfs[MAXNAMELEN];
+unsigned long long current_bootfs_obj;
+char current_bootpath[MAXPATHLEN];
+char current_devid[MAXPATHLEN];
+int is_zfs_mount;
+unsigned long best_drive;
+unsigned long best_part;
+int find_best_root;
 
 /* disk buffer parameters */
 int buf_drive = -1;
@@ -414,7 +428,7 @@ sane_partition (void)
 	  || current_drive == cdrom_drive)
       && (current_partition & 0xFF) == 0xFF
       && ((current_partition & 0xFF00) == 0xFF00
-	  || (current_partition & 0xFF00) < 0x800)
+	  || (current_partition & 0xFF00) < 0x1000)
       && ((current_partition >> 16) == 0xFF
 	  || (current_drive & 0x80)))
     return 1;
@@ -591,6 +605,7 @@ next_partition (unsigned long drive, unsigned long dest,
 {
   /* Forward declarations.  */
   auto int next_bsd_partition (void);
+  auto int next_solaris_partition(void);
   auto int next_pc_slice (void);
 
   /* Get next BSD partition in current PC slice.  */
@@ -642,6 +657,56 @@ next_partition (unsigned long drive, unsigned long dest,
 		bsd_evil_hack = 4;
 #endif /* ! STAGE1_5 */
 	      
+	      return 1;
+	    }
+	}
+
+      errnum = ERR_NO_PART;
+      return 0;
+    }
+
+  /* Get next Solaris partition in current PC slice.  */
+  int next_solaris_partition (void)
+    {
+      static unsigned long pcs_start;
+      int i;
+      int sol_part_no = (*partition & 0xFF00) >> 8;
+
+      /* If this is the first time...  */
+      if (sol_part_no == 0xFF)
+	{
+	  /* Check if the Solaris label is within current PC slice.  */
+	  if (*len < SOL_LABEL_LOC + 1)
+	    {
+	      errnum = ERR_BAD_PART_TABLE;
+	      return 0;
+	    }
+
+	  /* Read the Solaris label.  */
+	  if (! rawread (drive, *start + SOL_LABEL_LOC, 0, SECTOR_SIZE, buf))
+	    return 0;
+
+	  /* Check if it is valid.  */
+	  if (! SOL_LABEL_CHECK_MAG (buf))
+	    {
+	      errnum = ERR_BAD_PART_TABLE;
+	      return 0;
+	    }
+	  
+	  sol_part_no = -1;
+	  pcs_start = *start;	/* save the start of pc slice */
+	}
+
+      /* Search next valid Solaris partition.  */
+      for (i = sol_part_no + 1; i < SOL_LABEL_NPARTS; i++)
+	{
+	  if (SOL_PART_EXISTS (buf, i))
+	    {
+	      /* SOL_PART_START is relative to fdisk partition */
+	      *start = SOL_PART_START (buf, i) + pcs_start;
+	      *len = SOL_PART_LENGTH (buf, i);
+	      *partition = (*partition & 0xFF00FF) | (i << 8);
+
 	      return 1;
 	    }
 	}
@@ -726,6 +791,14 @@ next_partition (unsigned long drive, unsigned long dest,
   if (current_drive == NETWORK_DRIVE)
     return 0;
 #endif
+
+  /* check for Solaris partition */
+  if (*partition != 0xFFFFFF && IS_PC_SLICE_TYPE_SOLARIS (*type & 0xff))
+    {
+      if (next_solaris_partition ())
+	return 1;
+      errnum = ERR_NONE;
+    }
 
   /* If previous partition is a BSD partition or a PC slice which
      contains BSD partitions...  */
@@ -840,7 +913,8 @@ real_open_partition (int flags)
 		    grub_printf ("   Partition num: %d, ",
 				 current_partition >> 16);
 
-		  if (! IS_PC_SLICE_TYPE_BSD (current_slice))
+		  if (! IS_PC_SLICE_TYPE_BSD (current_slice) &&
+		      ! IS_PC_SLICE_TYPE_SOLARIS (current_slice))
 		    check_and_print_mount ();
 		  else
 		    {
@@ -854,17 +928,17 @@ real_open_partition (int flags)
 			  
 			  if (! got_part)
 			    {
-			      grub_printf ("[BSD sub-partitions immediately follow]\n");
+			      grub_printf ("[BSD/SOLARIS sub-partitions immediately follow]\n");
 			      got_part = 1;
 			    }
 			  
-			  grub_printf ("     BSD Partition num: \'%c\', ",
+			  grub_printf ("     BSD/SOLARIS Partition num: \'%c\', ",
 				       bsd_part + 'a');
 			  check_and_print_mount ();
 			}
 
 		      if (! got_part)
-			grub_printf (" No BSD sub-partition found, partition type 0x%x\n",
+			grub_printf (" No BSD/SOLARIS sub-partition found, partition type 0x%x\n",
 				     saved_slice);
 		      
 		      if (errnum)
@@ -890,7 +964,8 @@ real_open_partition (int flags)
 				      pc_slice, bsd_part + 'a');
 		      print_a_completion (str);
 		    }
-		  else if (! IS_PC_SLICE_TYPE_BSD (current_slice))
+		  else if (! IS_PC_SLICE_TYPE_BSD (current_slice) &&
+		      ! IS_PC_SLICE_TYPE_SOLARIS (current_slice))
 		    {
 		      char str[8];
 		      
@@ -1048,7 +1123,7 @@ set_device (char *device)
 	}
       else if (*device == ',')
 	{
-	  /* Either an absolute PC or BSD partition. */
+	  /* Either an absolute PC, BSD, or Solaris partition. */
 	  disk_choice = 0;
 	  part_choice ++;
 	  device++;
@@ -1071,13 +1146,13 @@ set_device (char *device)
 	      if (*device == ',')
 		device++;
 	      
-	      if (*device >= 'a' && *device <= 'h')
+	      if (*device >= 'a' && *device <= 'p')
 		{
 		  current_partition = (((*(device++) - 'a') << 8)
 				       | (current_partition & 0xFF00FF));
 		}
 	    }
-	  else if (*device >= 'a' && *device <= 'h')
+	  else if (*device >= 'a' && *device <= 'p')
 	    {
 	      part_choice ++;
 	      current_partition = ((*(device++) - 'a') << 8) | 0xFF00FF;

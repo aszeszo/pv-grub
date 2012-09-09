@@ -111,9 +111,12 @@
 #define PC_SLICE_TYPE_EZD        	0x55
 #define PC_SLICE_TYPE_MINIX		0x80
 #define PC_SLICE_TYPE_LINUX_MINIX	0x81
+#define PC_SLICE_TYPE_SOLARIS		0x82	/* also Linux swap! */
 #define PC_SLICE_TYPE_EXT2FS       	0x83
 #define PC_SLICE_TYPE_LINUX_EXTENDED	0x85
 #define PC_SLICE_TYPE_VSTAFS		0x9e
+#define PC_SLICE_TYPE_SOLARIS_BOOT	0xbe	/* Solaris boot (fat) */
+#define PC_SLICE_TYPE_SOLARIS2		0xbf	/* new Solaris type */
 #define PC_SLICE_TYPE_DELL_UTIL		0xde
 #define PC_SLICE_TYPE_LINUX_RAID	0xfd
 
@@ -129,6 +132,7 @@
      || _type == PC_SLICE_TYPE_FAT16_LBA \
      || _type == PC_SLICE_TYPE_FAT32 \
      || _type == PC_SLICE_TYPE_FAT32_LBA \
+     || _type == PC_SLICE_TYPE_SOLARIS_BOOT \
      || _type == PC_SLICE_TYPE_DELL_UTIL; })
 
 #define IS_PC_SLICE_TYPE_EXTENDED(type)	\
@@ -153,6 +157,9 @@
    || (type) == (PC_SLICE_TYPE_NETBSD | (fs) << 8))
 
 #define IS_PC_SLICE_TYPE_BSD(type)	IS_PC_SLICE_TYPE_BSD_WITH_FS(type,0)
+
+#define IS_PC_SLICE_TYPE_SOLARIS(type)	\
+  (((type) == PC_SLICE_TYPE_SOLARIS) || ((type) == PC_SLICE_TYPE_SOLARIS2))
 
 /*
  *  *BSD-style disklabel & partition definitions.
@@ -246,6 +253,31 @@
 #define	FS_HFS		15	/* Macintosh HFS */
 #define	FS_FILECORE	16	/* Acorn Filecore Filing System */
 #define	FS_EXT2FS	17	/* Linux Extended 2 file system */
+
+
+/*
+ *  Solaris LABEL definitions. All definitions are relative to the
+ *  current PC_SLICE.
+ */
+#define SOL_LABEL_LOC	1
+#define SOL_LABEL_SIZE	512
+#define SOL_LABEL_MAGIC	0xdabe
+#define SOL_LABEL_MAGIC_OFFSET 0x1fc
+#define SOL_LABEL_NPARTS 0x10
+
+#define SOL_PART_OFFSET 0x48
+
+#define SOL_LABEL_CHECK_MAG(l_ptr) \
+  (*((unsigned short *) (((int) l_ptr) + SOL_LABEL_MAGIC_OFFSET)) \
+   == ((unsigned short) SOL_LABEL_MAGIC ))
+
+#define SOL_PART_START(l_ptr, p) \
+  (*((unsigned long *) (((int) l_ptr) + SOL_PART_OFFSET + (p) * 0xc + 4)))
+
+#define SOL_PART_LENGTH(l_ptr, p) \
+  (*((unsigned long *) (((int) l_ptr) + SOL_PART_OFFSET + (p) * 0xc + 8)))
+
+#define SOL_PART_EXISTS(l_ptr, p) (SOL_PART_LENGTH(l_ptr, p) != 0)
 
 
 #endif /* _PC_SLICE_H */
