@@ -1,0 +1,20 @@
+This repo contains the following branches:
+
+grub-xen     - extracted grub-0.97 sources + patches from xen.org
+grub-illumos - files required for zfs support taken directly from illumos-gate
+master       - combination of the two above + necessary changes and adjustments
+
+Commands below can be run to build pv-grub from the sources in this repositoy:
+
+(Assuming 64-bit Linux system with all dependencies pre-installed is used)
+
+git clone git://xenbits.xen.org/xen.git xen.git
+cd xen.git
+git clone https://github.com/aszeszo/pv-grub.git stubdom/grub-upstream.git
+ln -s grub-upstream.git/grub-0.97 stubdom/grub-upstream
+patch -p1 < stubdom/grub-upstream.git/zfs-support.patch
+./configure
+make -C tools/include
+make -C stubdom pv-grub -j8
+
+Resulting binary can be found in stubdom/mini-os-x86_64-grub/mini-os.gz

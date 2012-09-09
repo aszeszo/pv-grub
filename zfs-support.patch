@@ -1,0 +1,15 @@
+diff --git a/stubdom/grub/Makefile b/stubdom/grub/Makefile
+index d6e3a1e..8c24844 100644
+--- a/stubdom/grub/Makefile
++++ b/stubdom/grub/Makefile
+@@ -54,6 +54,9 @@ CPPFLAGS += -DFSYS_VSTAFS=1
+ STAGE2_SOURCES+=fsys_xfs.c
+ CPPFLAGS += -DFSYS_XFS=1
+ 
++STAGE2_SOURCES+=fsys_zfs.c zfs_fletcher.c zfs_lzjb.c zfs_sha256.c
++CPPFLAGS += -DFSYS_ZFS=1
++
+ STAGE2_SOURCES:=$(addprefix stage2/,$(STAGE2_SOURCES))
+ NETBOOT_SOURCES:=$(addprefix netboot/,$(NETBOOT_SOURCES))
+ 
+
