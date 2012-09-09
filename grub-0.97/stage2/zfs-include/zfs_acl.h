@@ -26,10 +26,12 @@
 
 #pragma ident	"%Z%%M%	%I%	%E% SMI"
 
+#ifndef __MINIOS__
 #ifndef _UID_T
 #define	_UID_T
 typedef	unsigned int uid_t;			/* UID type */
 #endif /* _UID_T */
+#endif /* __MINIOS__ */
 
 typedef struct zfs_oldace {
 	uint32_t	z_fuid;		/* "who" */
