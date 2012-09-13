@@ -12,4 +12,16 @@ index d6e3a1e..8c24844 100644
  STAGE2_SOURCES:=$(addprefix stage2/,$(STAGE2_SOURCES))
  NETBOOT_SOURCES:=$(addprefix netboot/,$(NETBOOT_SOURCES))
  
+diff --git a/stubdom/grub/mini-os.c b/stubdom/grub/mini-os.c
+index 251e2ad..45ff76e 100644
+--- a/stubdom/grub/mini-os.c
++++ b/stubdom/grub/mini-os.c
+@@ -749,6 +749,7 @@ int main(int argc, char *argv[])
+ 
+     mbi.boot_loader_name = (unsigned long) "GNU GRUB " VERSION;
+     mbi.mem_lower = (start_info.nr_pages * PAGE_SIZE) / 1024;
++    mbi.mem_lower = mbi.mem_lower / 65536 * 65536;
+     mbi.mem_upper = 0;
+     saved_drive = boot_drive;
+     saved_partition = install_partition;
 
