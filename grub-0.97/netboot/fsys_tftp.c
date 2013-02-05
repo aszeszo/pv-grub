@@ -209,8 +209,11 @@ buf_fill (int abort)
 	break;
 
       if ((block || bcounter) && (block != prevblock + (unsigned short) 1))
+      {
+	      block = prevblock;
 	/* Block order should be continuous */
-	tp.u.ack.block = htons (block = prevblock);
+	tp.u.ack.block = htons (block);
+      }
       
       /* Should be continuous.  */
       tp.opcode = abort ? htons (TFTP_ERROR) : htons (TFTP_ACK);
