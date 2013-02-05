@@ -440,8 +440,11 @@ tftp (const char *name, int (*fnc) (unsigned char *, int, int, int))
 	break;
       
       if ((block || bcounter) && (block != prevblock + 1))
+      {
+	      block = prevblock;
 	/* Block order should be continuous */
-	tp.u.ack.block = htons (block = prevblock);
+	tp.u.ack.block = htons (block);
+      }
       
       /* Should be continuous.  */
       tp.opcode = htons (TFTP_ACK);
